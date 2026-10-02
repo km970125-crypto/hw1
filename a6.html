@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>星際守衛｜太空射擊</title>
+    <style>
+        * { box-sizing: border-box; }
+        body { margin: 0; min-height: 100vh; display: grid; place-items: center; padding: 20px; color: #eaf6ff; font-family: system-ui, sans-serif; background: radial-gradient(ellipse at 50% 15%, #192858, #080d20 65%, #03050d); }
+        main { width: min(100%, 800px); }
+        header { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 12px; }
+        h1 { margin: 0; font-size: clamp(18px, 4vw, 26px); letter-spacing: .12em; }
+        .stats { display: flex; gap: 18px; color: #9fe8ff; font-size: 14px; }
+        .stats strong { color: white; }
+        button { cursor: pointer; }
+        #sound { border: 1px solid #42618e; border-radius: 8px; padding: 7px 10px; color: white; background: #152443; }
+        .screen { position: relative; overflow: hidden; border: 1px solid #385281; border-radius: 14px; box-shadow: 0 0 40px #3978ff25; }
+        canvas { display: block; width: 100%; height: auto; background: #070d20; }
+        #overlay { position: absolute; inset: 0; display: grid; place-items: center; text-align: center; padding: 20px; background: #050a19b8; }
+        #overlay.hidden { display: none; }
+        .card { max-width: 420px; }
+        .card h2 { margin: 0 0 8px; color: #9fe8ff; font-size: clamp(26px, 6vw, 42px); }
+        .card p { color: #cfdaed; line-height: 1.7; }
+        #start { margin-top: 8px; border: 0; border-radius: 9px; padding: 12px 25px; color: #061020; background: #72e5ff; font-weight: 800; font-size: 16px; }
+        .help { margin: 10px 2px 0; color: #9eacc6; font-size: 13px; text-align: center; }
+        @media (max-width: 520px) { header { flex-wrap: wrap; } .stats { order: 3; width: 100%; justify-content: space-between; } }
+    </style>
+</head>
+<body>
+    <main>
+        <header>
+            <h1>✦ 星際守衛</h1>
+            <div class="stats"><span>分數 <strong id="score">0</strong></span><span>生命 <strong id="lives">3</strong></span><span>波次 <strong id="wave">1</strong></span></div>
+            <button id="sound" type="button">🔊 音效開</button>
+        </header>
+        <div class="screen">
+            <canvas id="game" width="800" height="600" aria-label="太空射擊遊戲"></canvas>
+            <section id="overlay"><div class="card"><h2 id="title">準備出擊？</h2><p id="message">駕駛戰機擊退敵軍，守護星際基地！<br>移動並射擊來避開敵人與彈幕。</p><button id="start">開始遊戲</button></div></section>
+        </div>
+        <p class="help">操作：← → 或 A / D 移動・空白鍵射擊・P 暫停</p>
+    </main>
+    <script>
+    (() => {
+        const canvas = document.querySelector('#game'), ctx = canvas.getContext('2d');
+        const overlay = document.querySelector('#overlay'), startButton = document.querySelector('#start');
+        const keys = {}, stars = Array.from({length: 100}, () => ({x: Math.random()*800, y: Math.random()*600, r: Math.random()*1.8+.3, v: Math.random()*1.4+.3}));
+        let player, bullets, enemies, particles, score, lives, wave, running = false, paused = false, lastShot = 0, spawnTimer = 0, frame = 0, audio, soundOn = true;
+        function tone(freq, duration, type = 'sine', volume = .04, endFreq = freq) {
+            if (!soundOn) return;
+            try {
+                audio ||= new (window.AudioContext || window.webkitAudioContext)();
+                if (audio.state === 'suspended') audio.resume();
+                const osc = audio.createOscillator(), gain = audio.createGain();
+                osc.type = type; osc.frequency.setValueAtTime(freq, audio.currentTime);
+                osc.frequency.exponentialRampToValueAtTime(Math.max(1, endFreq), audio.currentTime + duration);
+                gain.gain.setValueAtTime(volume, audio.currentTime); gain.gain.exponentialRampToValueAtTime(.001, audio.currentTime + duration);
+                osc.connect(gain); gain.connect(audio.destination); osc.start(); osc.stop(audio.currentTime + duration);
+            } catch (_) { /* Audio is optional. */ }
+        }
+        function hud() {
+            document.querySelector('#score').textContent = score;
+            document.querySelector('#lives').textContent = lives;
+            document.querySelector('#wave').textContent = wave;
+        }
+        function reset() {
+            player = {x: 400, y: 530, w: 38, h: 42, speed: 5.5, invulnerable: 0};
+            bullets = []; enemies = []; particles = []; score = 0; lives = 3; wave = 1; spawnTimer = 0; hud();
+        }
+        function begin() { reset(); running = true; paused = false; overlay.classList.add('hidden'); if (audio?.state === 'suspended') audio.resume(); }
+        function finish() {
+            running = false; overlay.classList.remove('hidden');
+            document.querySelector('#title').textContent = '任務結束';
+            document.querySelector('#message').innerHTML = `最終分數：${score}<br>再出發一次，挑戰更高紀錄！`;
+            startButton.textContent = '再玩一次'; tone(260, .5, 'sawtooth', .07, 70);
+        }
+        function burst(x, y, color, count = 12) {
+            for (let i=0; i<count; i++) { const a=Math.random()*Math.PI*2, v=Math.random()*3+1; particles.push({x,y,vx:Math.cos(a)*v,vy:Math.sin(a)*v,life:25+Math.random()*15,color}); }
+        }
+        function damage() {
+            if (player.invulnerable) return;
+            lives--; player.invulnerable = 90; hud(); tone(180,.25,'sawtooth',.07,55);
+            if (lives <= 0) finish();
+        }
+        function update() {
+            frame++;
+            stars.forEach(s => { s.y += s.v; if (s.y > 600) { s.y=0; s.x=Math.random()*800; } });
+            if (!running || paused) return;
+            if (keys.ArrowLeft || keys.KeyA) player.x -= player.speed;
+            if (keys.ArrowRight || keys.KeyD) player.x += player.speed;
+            player.x = Math.max(22, Math.min(778, player.x));
+            if ((keys.Space || keys.ArrowUp || keys.KeyW) && frame-lastShot > 11) { bullets.push({x:player.x,y:player.y-20}); lastShot=frame; tone(760,.07,'square',.018,340); }
+            if (player.invulnerable) player.invulnerable--;
+            if (++spawnTimer > Math.max(22,68-wave*4)) {
+                const size=25+Math.random()*14;
+                enemies.push({x:30+Math.random()*740,y:-35,w:size,h:size,speed:1.4+wave*.18+Math.random(),phase:Math.random()*6.3,hp:wave>3&&Math.random()<.2?2:1}); spawnTimer=0;
+            }
+            bullets.forEach(b => b.y-=8); enemies.forEach(e => {e.y+=e.speed;e.x+=Math.sin(frame*.035+e.phase)*.8;});
+            bullets=bullets.filter(b=>b.y>-10);
+            enemies=enemies.filter(e=>{
+                for(let i=bullets.length-1;i>=0;i--) { const b=bullets[i]; if(Math.abs(b.x-e.x)<e.w*.55&&Math.abs(b.y-e.y)<e.h*.55) { bullets.splice(i,1); e.hp--; burst(e.x,e.y,e.hp?'#ffdc70':'#ff668c',e.hp?4:14); if(!e.hp){score+=10;tone(420,.12,'square',.035,170);hud();return false;} } }
+                if(e.y>625){damage();return false;}
+                if(!player.invulnerable&&Math.abs(e.x-player.x)<(e.w+player.w)*.48&&Math.abs(e.y-player.y)<(e.h+player.h)*.45){damage();burst(e.x,e.y,'#ff668c');return false;}
+                return true;
+            });
+            particles.forEach(p=>{p.x+=p.vx;p.y+=p.vy;p.life--;}); particles=particles.filter(p=>p.life>0);
+            const next=1+Math.floor(score/150); if(next!==wave){wave=next;hud();tone(600,.25,'triangle',.05,950);}
+        }
+        function ship(x,y,color,enemy=false) {
+            ctx.save();ctx.translate(x,y);if(!enemy)ctx.rotate(Math.PI);ctx.fillStyle=color;ctx.shadowColor=color;ctx.shadowBlur=14;
+            ctx.beginPath();ctx.moveTo(0,-22);ctx.lineTo(17,17);ctx.lineTo(5,12);ctx.lineTo(0,18);ctx.lineTo(-5,12);ctx.lineTo(-17,17);ctx.closePath();ctx.fill();
+            ctx.fillStyle='#fff';ctx.globalAlpha=.8;ctx.beginPath();ctx.ellipse(0,1,4,8,0,0,Math.PI*2);ctx.fill();ctx.restore();
+        }
+        function draw() {
+            ctx.clearRect(0,0,800,600);const bg=ctx.createLinearGradient(0,0,0,600);bg.addColorStop(0,'#0b1531');bg.addColorStop(1,'#070a19');ctx.fillStyle=bg;ctx.fillRect(0,0,800,600);
+            stars.forEach(s=>{ctx.globalAlpha=.35+s.r/2*.6;ctx.fillStyle='#c6eaff';ctx.beginPath();ctx.arc(s.x,s.y,s.r,0,Math.PI*2);ctx.fill();});ctx.globalAlpha=1;
+            bullets.forEach(b=>{ctx.fillStyle='#8cf4ff';ctx.shadowColor='#59deff';ctx.shadowBlur=12;ctx.fillRect(b.x-2,b.y-9,4,17);});ctx.shadowBlur=0;
+            enemies.forEach(e=>ship(e.x,e.y,e.hp>1?'#ffcf64':'#ff668c',true));
+            if(player&&(player.invulnerable===0||Math.floor(frame/6)%2===0))ship(player.x,player.y,'#63eaff');
+            particles.forEach(p=>{ctx.globalAlpha=Math.min(1,p.life/20);ctx.fillStyle=p.color;ctx.fillRect(p.x,p.y,3,3);});ctx.globalAlpha=1;
+            if(paused){ctx.fillStyle='#071020aa';ctx.fillRect(0,0,800,600);ctx.fillStyle='white';ctx.font='bold 38px system-ui';ctx.textAlign='center';ctx.fillText('已暫停',400,300);}
+        }
+        function loop(){update();draw();requestAnimationFrame(loop);}
+        startButton.addEventListener('click',begin);
+        document.querySelector('#sound').addEventListener('click',event=>{soundOn=!soundOn;event.currentTarget.textContent=soundOn?'🔊 音效開':'🔇 音效關';if(soundOn)tone(660,.1);});
+        window.addEventListener('keydown',event=>{if(['ArrowLeft','ArrowRight','ArrowUp','Space'].includes(event.code))event.preventDefault();keys[event.code]=true;if(event.code==='KeyP'&&running)paused=!paused;});
+        window.addEventListener('keyup',event=>{keys[event.code]=false;});
+        reset();loop();
+    })();
+    </script>
+</body>
+</html>
